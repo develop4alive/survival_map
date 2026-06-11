@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.git/
+.gitignore
+.qwen/
+.pytest_cache/
+.coverage
+*.cover
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.venv/
+venv/
+ENV/
+
+# Tests
+tests/
+*_test.py
+test_*.py
+
+# Documentation
+*.md
+!requirements.txt
+docs/
+
+# Legacy
+legacy/
+
+# Node modules
+node_modules/
+web/node_modules/
+
+# Frontend build output — regenerated inside Dockerfile.nginx builder stage
+web/dist/
+
+# Session (mounted via volume)
+session.session
+*.session
+*.session-journal
+
+# AI assistant local state
+.AGENTS/
+.cursor/
+
+# Debug exports / data dumps
+*.csv
+!postgres/data/*.csv
+!postgres/data/**/*.csv
+
+# Frontend tests (no need in production image)
+web/tests/
+
+# Build/CI artifacts
+.github/
