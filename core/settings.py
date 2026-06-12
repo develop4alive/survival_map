@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from environs import Env
 from typing import Optional
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -100,14 +101,22 @@ class AppConfig:
 
 @dataclass
 class BotConfig:
+    # channel_id захардкожен (как DB/Redis-параметры): per-deployment
+    # идентификатор канала мониторинга меняется правкой settings.py, не env.
     token: str
-    channel_id: str
+    channel_id: str = "-1002050105527"
     webapp_url: Optional[str] = None
     redirect_url: Optional[str] = None
 
 
 @dataclass
 class JWTConfig:
+    # secret автогенерируется эфемерно в памяти при старте (см. _resolve_jwt_secret),
+    # если JWT_SECRET не задан в env. Это корректно, пока core — ОДИН процесс
+    # (main.py: AppRunner + asyncio.run, без воркеров/форка): секрет стабилен в
+    # течение жизни процесса. При масштабировании core на несколько реплик/воркеров
+    # эфемерные секреты разойдутся и сломают верификацию JWT между ними — тогда
+    # нужен общий секрет (задать JWT_SECRET в env или вынести в shared store).
     secret: str
     access_token_ttl: int = 900  # 15 minutes
     refresh_token_ttl: int = 86400  # 24 hours
@@ -226,93 +235,47 @@ class Settings:
     question_overlay: QuestionOverlayConfig = field(default_factory=QuestionOverlayConfig)
 
 
-def _get_required_secret(env: Env) -> str:
+def _resolve_jwt_secret(env: Env) -> str:
+    """Получить секрет JWT: env-override (если задан и валиден) либо автогенерация.
+
+    JWT_SECRET больше НЕ обязателен в env. Логика:
+      - если JWT_SECRET задан в env и валиден (≥32 символов, не плейсхолдер) —
+        используется как опциональный override (обратная совместимость, общий
+        секрет для multi-replica деплоя);
+      - иначе — генерируется эфемерный секрет в памяти (secrets.token_urlsafe).
+        Стабилен в течение жизни процесса; при рестарте новый → ранее выданные
+        JWT инвалидируются (см. предупреждение в JWTConfig).
+
+    Никогда не бросает исключение — отсутствие/невалидность env-значения не
+    является ошибкой, секрет просто генерируется.
     """
-    Получить секретный ключ JWT из переменных окружения.
-    
-    Требует обязательной установки JWT_SECRET в production.
-    Отказывается использовать значения по умолчанию из примеров.
-    
-    Raises:
-        ValueError: Если JWT_SECRET не установлен или использует значение по умолчанию
-    """
-    secret = env.str("JWT_SECRET", None)
-    
-    if secret is None:
-        raise ValueError(
-            "JWT_SECRET is not set! "
-            "This is a required security setting. "
-            "Generate a secure key: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-        )
-    
-    # Проверка на значения по умолчанию из документации
-    insecure_defaults = [
+    # Плейсхолдеры/слабые значения из примеров — игнорируем как «не задан».
+    insecure_defaults = {
         "your-secret-key",
         "your-secret-key-change-in-production",
         "your-secret-key-change-in-production-min-32-chars",
         "secret",
         "changeme",
         "change-me",
-    ]
-    
-    if secret.lower() in insecure_defaults or secret.startswith("your-secret"):
-        raise ValueError(
-            f"JWT_SECRET uses an insecure default value! "
-            f"Current value: {secret[:20]}... "
-            "Generate a secure key: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-        )
-    
-    # Минимальная длина 32 символа
-    if len(secret) < 32:
-        raise ValueError(
-            f"JWT_SECRET must be at least 32 characters long (current: {len(secret)}). "
-            "Generate a secure key: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-        )
-    
-    return secret
+    }
 
+    secret = env.str("JWT_SECRET", None)
 
-def _get_required_channel_id(env: Env) -> str:
-    """
-    Получить ID канала из переменных окружения.
-    
-    Требует обязательной установки CHANNEL_ID.
-    Проверяет формат Telegram channel ID (должен начинаться с -100).
-    
-    Raises:
-        ValueError: Если CHANNEL_ID не установлен или имеет неверный формат
-    """
-    channel_id = env.str("CHANNEL_ID", None)
-    
-    if channel_id is None:
-        # Provide helpful error message for Docker environment
-        logger.error("CHANNEL_ID is not set!")
-        
-        # Try to diagnose the issue by checking other env variables
-        try:
-            bot_token = env.str("BOT_TOKEN", "NOT_SET")
-            jwt_secret = env.str("JWT_SECRET", "NOT_SET")
-            
-            logger.error(f"Environment diagnosis: BOT_TOKEN present = {bot_token != 'NOT_SET'}, JWT_SECRET present = {jwt_secret != 'NOT_SET'}")
-        except Exception as e:
-            logger.error(f"Error checking environment: {e}")
-        
-        raise ValueError(
-            "CHANNEL_ID is not set! "
-            "This is a required setting for the Telegram channel parser. "
-            "Check that CHANNEL_ID is properly configured in your Docker environment. "
-            "For Docker: ensure CHANNEL_ID is in docker-compose.yml app service environment variables."
+    if secret:
+        is_placeholder = secret.lower() in insecure_defaults or secret.startswith("your-secret")
+        if len(secret) >= 32 and not is_placeholder:
+            return secret  # валидный override из env
+        logger.warning(
+            "JWT_SECRET in env is invalid (placeholder or <32 chars) — ignoring, "
+            "generating an ephemeral secret instead."
         )
-    
-    # Проверка формата Telegram channel ID (должен начинаться с -100)
-    if not channel_id.startswith("-100"):
-        logger.warning(f"CHANNEL_ID has invalid format: {channel_id}")
-        raise ValueError(
-            f"CHANNEL_ID has invalid format! "
-            f"Telegram channel IDs should start with '-100'. Current value: {channel_id}"
-        )
-    
-    return channel_id
+
+    generated = secrets.token_urlsafe(48)
+    logger.info(
+        "JWT_SECRET not provided — generated an ephemeral per-process secret. "
+        "Tokens are invalidated on restart; set JWT_SECRET in env to persist/share."
+    )
+    return generated
 
 
 def load_settings(env_path: Optional[str] = None, require_jwt: bool = True) -> Settings:
@@ -322,14 +285,16 @@ def load_settings(env_path: Optional[str] = None, require_jwt: bool = True) -> S
     изменить калибровку матчера / параметры БД / прокси и т.п., правится
     `core/settings.py` напрямую (не env).
 
-    Keep-list env: BOT_TOKEN, CHANNEL_ID, WEBAPP_URL, REDIRECT_URL, JWT_SECRET.
+    Keep-list env: BOT_TOKEN, WEBAPP_URL, REDIRECT_URL. JWT_SECRET — опциональный
+    override автогенерации (см. _resolve_jwt_secret), в env не обязателен.
+    CHANNEL_ID захардкожен в BotConfig (не env).
     """
     env = Env()
     env.read_env(env_path)
 
     try:
         jwt_config = (
-            JWTConfig(secret=_get_required_secret(env))
+            JWTConfig(secret=_resolve_jwt_secret(env))
             if require_jwt else None
         )
 
@@ -342,7 +307,6 @@ def load_settings(env_path: Optional[str] = None, require_jwt: bool = True) -> S
             db=DatabaseConfig(),
             bot=BotConfig(
                 token=env.str("BOT_TOKEN", ""),
-                channel_id=_get_required_channel_id(env),
                 webapp_url=env.str("WEBAPP_URL", None),
                 redirect_url=env.str("REDIRECT_URL", None),
             ),
