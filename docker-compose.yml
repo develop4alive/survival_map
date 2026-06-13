@@ -18,6 +18,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.postgres
+      # host-сеть на время сборки: у build-контейнеров Docker нет egress/DNS
+      # на этом хосте (EAI_AGAIN), тогда как сеть хоста рабочая.
+      network: host
     container_name: postgres
     environment:
       # Захардкожено: postgres-контейнер изолирован от внешнего мира (нет
@@ -57,6 +60,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.parser
+      # host-сеть на время сборки (см. postgres.build.network).
+      network: host
     container_name: parser
     # Без env: JWT_SECRET автогенерируется в core/settings.py, остальное —
     # hardcoded defaults; парсер аутентифицируется через session.session.
@@ -132,6 +137,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.core
+      # host-сеть на время сборки (см. postgres.build.network).
+      network: host
     container_name: core
     stop_grace_period: 30s
     environment:
@@ -184,6 +191,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      # host-сеть на время сборки (см. postgres.build.network).
+      network: host
     container_name: web
     stop_grace_period: 30s
     ports:

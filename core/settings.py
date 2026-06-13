@@ -90,7 +90,7 @@ class DatabaseConfig:
 class AppConfig:
     host: str = "0.0.0.0"
     port: int = 8080
-    telegram_validation_enabled: bool = True
+    telegram_validation_enabled: bool = False
     # Логирование (main.py, parser/monitoring.py читают эти поля)
     log_level: str = "INFO"
     log_format: str = "json"  # json | text
@@ -278,6 +278,24 @@ def _resolve_jwt_secret(env: Env) -> str:
     return generated
 
 
+def _resolve_bool(env: Env, key: str, default: bool = False) -> bool:
+    """Прочитать bool из env, НЕ роняя старт на пустом/невалидном значении.
+
+    env.bool бросает на пустой строке (``KEY=``) и на мусоре. Здесь:
+    отсутствует / пусто / невалидно → ``default``; валидное → его булев смысл
+    (``true/false/1/0/yes/no/on/off``, регистронезависимо).
+    """
+    raw = (env.str(key, "") or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on", "y", "t"}:
+        return True
+    if raw in {"0", "false", "no", "off", "n", "f"}:
+        return False
+    logger.warning(f"{key}={raw!r} is not a valid boolean — using default {default}.")
+    return default
+
+
 def load_settings(env_path: Optional[str] = None, require_jwt: bool = True) -> Settings:
     """Load settings — env читается ТОЛЬКО для credentials/per-deployment URL.
 
@@ -300,8 +318,8 @@ def load_settings(env_path: Optional[str] = None, require_jwt: bool = True) -> S
 
         return Settings(
             app=AppConfig(
-                telegram_validation_enabled=env.bool(
-                    "TELEGRAM_VALIDATION_ENABLED", default=True
+                telegram_validation_enabled=_resolve_bool(
+                    env, "TELEGRAM_VALIDATION_ENABLED", default=False
                 ),
             ),
             db=DatabaseConfig(),
